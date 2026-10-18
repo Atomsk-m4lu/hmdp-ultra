@@ -14,7 +14,7 @@ import java.util.stream.Collectors;
 /**
  * 任务节点注册表
  * <p>
- * 启动时由 {@link com.hmdp.shared.infrastructure.config.SharedEngineAutoConfiguration} 初始化，
+ * 启动时由 Infrastructure 层的 SharedEngineAutoConfiguration 初始化，
  * 扫描所有 {@link TaskNodeHandler} Bean，按 group 分组、按 order 排序后存储。
  * 引擎执行时通过 getNodesByGroup 或 getNodesGroupedByPhase 获取节点列表。
  * </p>
@@ -83,13 +83,21 @@ public class TaskNodeRegistry {
      * @param holders 要注册的节点列表 (handler + annotation 已封装好)
      */
     public void register(List<TaskNodeHolder> holders) {
+        // 清空旧数据，支持重复注册（比如启动时多次扫描）
         nodeGroups.clear();
+
+        // 第一步：按 @TaskNode.group() 分组，用 LinkedHashMap 保持 group 插入顺序（Spring Bean 扫描顺序）
         Map<String, List<TaskNodeHolder>> grouped = new LinkedHashMap<>();
         for (TaskNodeHolder holder : holders) {
+            // computeIfAbsent：group 不存在就创建新 ArrayList，存在就复用，然后把当前 holder 加进去
             grouped.computeIfAbsent(holder.getAnnotation().group(), key -> new ArrayList<>()).add(holder);
         }
+
+        // 第二步：每个 group 内部按 @TaskNode.order() 升序排序，然后用 unmodifiableList 包裹防止运行时被修改
         for (Map.Entry<String, List<TaskNodeHolder>> entry : grouped.entrySet()) {
+            // 排序规则：按注解里的 order 值从小到大，数字越小越先执行
             entry.getValue().sort(Comparator.comparingInt(node -> node.getAnnotation().order()));
+            // 用 unmodifiableList 防御性拷贝：外部拿到后改不动，保证 Registry 内部数据安全
             nodeGroups.put(entry.getKey(), Collections.unmodifiableList(new ArrayList<>(entry.getValue())));
         }
     }

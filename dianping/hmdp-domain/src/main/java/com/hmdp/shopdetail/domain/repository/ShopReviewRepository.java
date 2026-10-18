@@ -8,7 +8,7 @@ import java.util.List;
 /**
  * 店铺评价仓储接口（Domain 层定义，Infrastructure 层实现）
  * <p>
- * 实现类为 {@link com.hmdp.shopdetail.infrastructure.repository.MybatisShopReviewRepository}。
+ * 实现类为 Infrastructure 层的 MybatisShopReviewRepository。
  * </p>
  */
 public interface ShopReviewRepository {

@@ -161,13 +161,18 @@ public class TaskChainEngine {
      * @param phaseConfigs   调用方传入的阶段配置 (顺序决定了 Phase 的执行顺序)
      */
     private <I, O> TaskContext<I, O> executePhaseChain(Map<ProcessPhase, List<TaskNodeHolder>> phaseNodesMap, TaskContext<I, O> context, List<PhaseConfig> phaseConfigs) {
+        // 遍历调用方指定的阶段配置列表，列表顺序就是阶段的执行顺序（不是 ProcessPhase 枚举的 order）
         for (PhaseConfig phaseConfig : phaseConfigs) {
+            // 链路级熔断：每次循环开头检查生死开关，不可跳过的节点失败时置为 true，立即终止后续所有阶段
             if (context.isTerminateChain()) {
                 break;
             }
+            // 从预先分好组的 Map 里取出当前阶段的节点列表（Registry 启动时已按 group+order 排好序）
             List<TaskNodeHolder> phaseNodes = phaseNodesMap.get(phaseConfig.getPhase());
+            // 委托给 PhaseExecutionEngine：Engine 根据 phaseConfig.executionMode 决定串行 or 并行跑 phaseNodes
             phaseExecutionEngine.executePhase(phaseConfig, phaseNodes, context);
         }
+        // 返回同一个 context 对象，调用方从 context.getOutput() 拿最终结果，从 getAttribute 拿中间数据
         return context;
     }
 }

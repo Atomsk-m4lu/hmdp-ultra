@@ -10,7 +10,7 @@ import java.util.List;
  * 店铺详情仓储接口（Domain 层定义，Infrastructure 层实现）
  * <p>
  * 负责店铺基础信息、附近店铺、优惠券和探店博客的数据存取。
- * 实现类为 {@link com.hmdp.shopdetail.infrastructure.repository.MybatisShopDetailRepository}，
+ * 实现类为 Infrastructure 层的 MybatisShopDetailRepository，
  * 通过适配器复用遗留 Shop/Blog 服务。
  * </p>
  */

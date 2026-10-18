@@ -88,21 +88,27 @@ public class ShopDetailApplicationService {
     public ShopDetailAggregate getShopDetail(Long shopId) {
         ShopDetailAggregate detail;
         if (taskChainEngine == null) {
-            // 降级路径主要用于测试或共享引擎未装配场景，仍然保证接口可用。
+            // 降级：引擎未装配（测试环境或共享引擎未加载），走老的串行查库路径兜底，保证接口可用
             detail = domainService.getShopDetail(shopId);
         } else {
+            // 新建 context：贯穿整条链路的数据容器，节点间共享数据全靠它
             ShopDetailTaskContext context = new ShopDetailTaskContext();
             context.setInput(shopId);
-            // 第一阶段并行拉齐原始事实；第二阶段串行组装并丰富聚合根。
+
+            // ★ 调引擎：告诉它跑 shop_detail 链路，分两个阶段
+            // 阶段1 DATA_PROCESSING 并行 → 4个 IO 密集查询节点同时拉数据（店铺基础/博客/评价/优惠券）
+            // 阶段2 POST_PROCESSING 串行 → Assemble 组装聚合根 → Enrich 补充周边推荐
             taskChainEngine.executePhaseChain("shop_detail", context, Arrays.asList(
                     new PhaseConfig(ProcessPhase.DATA_PROCESSING, ExecutionMode.PARALLEL),
                     new PhaseConfig(ProcessPhase.POST_PROCESSING, ExecutionMode.SERIAL)
             ));
-            // 任务链内部已完成组装和丰富，应用层直接取结果。
+
+            // 引擎跑完后，最终结果已由 AssembleShopDetailNode 写入 context.output
+            // 应用层直接取，不用关心引擎内部怎么编排的
             detail = context.getOutput();
         }
         if (detail != null && detail.getShopId() != null) {
-            // 评分刷新异步触发，不阻塞主商详返回。
+            // 评分刷新异步触发（发 MQ），不阻塞商详接口主流程返回
             shopRatingRefreshService.triggerIfExpired(detail.getShopId());
         }
         return detail;

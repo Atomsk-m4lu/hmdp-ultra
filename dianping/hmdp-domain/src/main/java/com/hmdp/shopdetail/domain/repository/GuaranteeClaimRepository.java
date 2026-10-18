@@ -7,7 +7,7 @@ import java.util.Optional;
 /**
  * 保障申诉仓储接口（Domain 层定义，Infrastructure 层实现）
  * <p>
- * 实现类为 {@link com.hmdp.shopdetail.infrastructure.repository.MybatisGuaranteeClaimRepository}。
+ * 实现类为 Infrastructure 层的 MybatisGuaranteeClaimRepository。
  * </p>
  */
 public interface GuaranteeClaimRepository {
