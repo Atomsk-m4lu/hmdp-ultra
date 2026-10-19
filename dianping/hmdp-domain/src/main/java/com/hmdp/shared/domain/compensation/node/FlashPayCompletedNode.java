@@ -24,6 +24,9 @@ public class FlashPayCompletedNode implements StateNode {
 
     @Override
     public NodeResult execute(StateTask task, StateContext context) {
+        // terminalSuccess：标记本节点为终态，引擎拿到后走路径A → markCompleted + return，循环终止
+        // 与 MANUAL_REVIEW 的区别：MANUAL_REVIEW 也是终态但走的是 FailurePolicy 路径（return 退出），
+        // 而 COMPLETED 是业务正常走完后主动返回 terminalSuccess 让引擎收尾
         return NodeResult.terminalSuccess("自动赔付已完成");
     }
 }

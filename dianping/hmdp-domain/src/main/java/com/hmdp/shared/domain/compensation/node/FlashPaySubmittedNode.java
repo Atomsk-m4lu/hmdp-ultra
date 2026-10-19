@@ -37,10 +37,14 @@ public class FlashPaySubmittedNode implements StateNode {
      */
     @Override
     public NodeResult execute(StateTask task, StateContext context) {
+        // task.payload 是 Facade 层传进来的 JSON 字符串，这里反序列化回业务对象才能读 reason 字段
         FlashPayPayload payload = FlashPayPayload.deserialize(task.getPayload());
+        // 校验申诉原因：null 或全空白都算无效
+        // retryable=false：这是数据问题（用户没填）不是临时故障，重试没意义，FailurePolicy 会直接转人工
         if (payload.getReason() == null || payload.getReason().trim().isEmpty()) {
             return NodeResult.failure("EMPTY_REASON", "申诉原因为空，已转人工审核", false);
         }
+        // 原因有效 → 自动审批通过，流转到 APPROVED 状态，由引擎循环推进下一个 node
         return NodeResult.next(FlashPayStateCode.APPROVED.name(), "命中无忧闪赔规则，自动审批通过");
     }
 }

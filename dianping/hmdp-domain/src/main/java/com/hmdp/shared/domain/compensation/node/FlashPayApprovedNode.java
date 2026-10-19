@@ -24,6 +24,8 @@ public class FlashPayApprovedNode implements StateNode {
 
     @Override
     public NodeResult execute(StateTask task, StateContext context) {
+        // 纯过渡节点：SUBMITTED 校验通过后自动进入此状态，当前无额外业务逻辑直接推进到 COMPLETED
+        // 预留给未来的扩展点：赔付金额计算、二次风控校验等，届时在此节点补逻辑而非新增状态
         return NodeResult.next(FlashPayStateCode.COMPLETED.name(), "自动赔付处理中");
     }
 }

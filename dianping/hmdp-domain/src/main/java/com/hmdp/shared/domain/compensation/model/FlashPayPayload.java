@@ -28,7 +28,10 @@ public class FlashPayPayload {
 
     /** 从 StateTask.payload 反序列化还原 */
     public static FlashPayPayload deserialize(String payload) {
+        // 按 serialize 约定的 "planCode|reason" 格式还原
+        // limit=2：保证 reason 字段里即便包含 | 也不会被多切（只分割成两段）
         String[] parts = payload.split("\\|", 2);
+        // parts[0] 一定是 planCode；parts[1] 可能不存在（split 对没有分隔符的串只返回一个元素），兜底为空串
         return new FlashPayPayload(parts[0], parts.length > 1 ? parts[1] : "");
     }
 }
