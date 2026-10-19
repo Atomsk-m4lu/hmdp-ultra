@@ -1,7 +1,13 @@
 package com.hmdp.shared.infrastructure.config;
 
+import com.hmdp.shared.domain.compensation.amount.PayoutAmountCalculator;
 import com.hmdp.shared.domain.compensation.machine.FlashPayStateMachineDefinition;
 import com.hmdp.shared.domain.compensation.service.FlashPayStateMachineFacade;
+import com.hmdp.shared.domain.compensation.spi.InMemoryPayoutGateway;
+import com.hmdp.shared.domain.compensation.spi.MockMode;
+import com.hmdp.shared.domain.compensation.spi.PayoutAuditRepository;
+import com.hmdp.shared.domain.compensation.spi.PayoutGateway;
+import com.hmdp.shared.domain.compensation.spi.PayoutNotificationService;
 import com.hmdp.shared.stateengine.policy.RetryPolicy;
 import com.hmdp.shared.stateengine.service.StateEngine;
 import com.hmdp.shared.stateengine.service.StateMachineRegistry;
@@ -17,7 +23,9 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Executor;
 
 /**
@@ -27,6 +35,7 @@ import java.util.concurrent.Executor;
  * <ul>
  *   <li>RetryPolicy：从配置文件读取最大重试次数</li>
  *   <li>StateMachineRegistry / StateEngine：共享状态引擎运行时</li>
+ *   <li>FlashPayStateMachineDefinition：构造器注入赔付 2.0 依赖（金额计算器 + 支付网关 + 审计仓储 + 通知服务）</li>
  *   <li>FlashPayStateMachineFacade：无忧闪赔场景门面</li>
  *   <li>TaskNodeRegistry：扫描所有 TaskNodeHandler Bean，按 group/order 注册</li>
  *   <li>TaskDispatcher：持有 CPU 和 IO 两个线程池</li>
@@ -36,7 +45,7 @@ import java.util.concurrent.Executor;
  * </p>
  */
 @Configuration
-@EnableConfigurationProperties(CompensationRetryProperties.class)
+@EnableConfigurationProperties({CompensationRetryProperties.class, PayoutAuditProperties.class})
 public class SharedEngineAutoConfiguration {
 
     @Bean
@@ -45,9 +54,33 @@ public class SharedEngineAutoConfiguration {
     }
 
     @Bean
-    public StateMachineRegistry stateMachineRegistry() {
+    public PayoutAmountCalculator payoutAmountCalculator(PayoutAuditProperties properties) {
+        Map<String, Long> rules = properties.getPayoutRules() != null
+                ? properties.getPayoutRules()
+                : new HashMap<>();
+        return new PayoutAmountCalculator(rules, properties.getMaxPayout());
+    }
+
+    @Bean
+    public PayoutGateway payoutGateway(PayoutAuditProperties properties) {
+        MockMode mode = properties.getPayment() != null && properties.getPayment().getMockMode() != null
+                ? properties.getPayment().getMockMode()
+                : MockMode.SUCCESS;
+        return new InMemoryPayoutGateway(mode);
+    }
+
+    // PayoutAuditRepository 由 MybatisPayoutAuditRepository（@Repository）提供；
+    // 这里不要再声明内存版 @Bean，否则同类型会出现两个候选，启动时注入失败。
+    // PayoutNotificationService 由 ClaimPayoutNotificationService（@Service）提供；
+    // 这里不要再声明日志版 @Bean，理由同上。
+
+    @Bean
+    public StateMachineRegistry stateMachineRegistry(PayoutAmountCalculator calculator,
+                                                      PayoutGateway gateway,
+                                                      PayoutAuditRepository auditRepository,
+                                                      PayoutNotificationService notificationService) {
         StateMachineRegistry registry = new StateMachineRegistry();
-        registry.register(new FlashPayStateMachineDefinition());
+        registry.register(new FlashPayStateMachineDefinition(calculator, gateway, auditRepository, notificationService));
         return registry;
     }
 

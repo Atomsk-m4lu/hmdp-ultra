@@ -97,3 +97,11 @@ seckill:
 cache:
   local:
     enabled: true
+
+# ===== 无忧闪赔赔付配置 =====
+flash-pay:
+  payout-rules:
+    FLASH_PAY: 50
+  max-payout: 500
+  payment:
+    mock-mode: SUCCESS   # SUCCESS / FAIL / REJECT
