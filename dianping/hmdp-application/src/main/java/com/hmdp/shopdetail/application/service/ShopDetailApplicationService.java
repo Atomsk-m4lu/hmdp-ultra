@@ -119,8 +119,11 @@ public class ShopDetailApplicationService {
      * <p>先持久化申诉单，再触发无忧闪赔状态机驱动状态流转，最终回写状态到数据库。</p>
      */
     public GuaranteeClaim submitGuaranteeClaim(GuaranteeClaim claim) {
+        // 先落库，申诉单必须持久化成功才能驱动状态机，避免引擎跑完却找不到单据
         GuaranteeClaim savedClaim = domainService.createClaim(claim);
+        // 共享引擎模块未装配时 facade 为 null（@Autowired required=false），跳过状态机只落库，保证接口可用
         if (flashPayStateMachineFacade != null) {
+            // allowResume=false：首次提交走 start 新建 StateTask，从 SUBMITTED 切入状态机
             runCompensation(savedClaim, false);
         }
         return savedClaim;
@@ -131,10 +134,13 @@ public class ShopDetailApplicationService {
      * <p>按申诉单号查询后重新触发无忧闪赔状态机，超过最大重试次数时转人工审核。</p>
      */
     public GuaranteeClaim retryGuaranteeClaim(String claimNo) {
+        // 从 DB 拉取已有申诉单，拿到后才能知道当前状态和重试计数
         GuaranteeClaim claim = domainService.getClaim(claimNo);
+        // 单据不存在或引擎未装配，直接返回 null / 原单据，不抛异常（上层可能只是定时批量重试）
         if (claim == null || flashPayStateMachineFacade == null) {
             return claim;
         }
+        // allowResume=true：走 startOrResume，有任务则从持久化状态续跑（保留进度与重试计数），无则新建
         return runCompensation(claim, true);
     }
 
@@ -152,14 +158,19 @@ public class ShopDetailApplicationService {
      * CBB 只关心“状态怎么流转”，赔付业务字段由 flash-pay 场景自己解释。
      */
     private GuaranteeClaim runCompensation(GuaranteeClaim claim, boolean allowResume) {
+        // 只把 planCode + reason 塞进最小 payload，而不是整个 claim：引擎不感知业务实体，
+        // 引擎只关心"状态怎么流转"，赔付业务字段由 flash-pay 场景自己解释（防止引擎层反向依赖领域模型）
         FlashPayPayload payload = new FlashPayPayload(claim.getPlanCode(), claim.getReason());
-        // 首次提交走 start（新建任务）；重试入口走 startOrResume（已有任务则 resume，保留进度与重试计数）
+        // 三元选择首次 vs 重试：
+        //   allowResume=false → start   新建 StateTask，claimNo 作为 taskId，shopId 作为 bizKey
+        //   allowResume=true  → startOrResume 先查 taskRepository，有任务则 resume 从持久化状态续跑，无任务则新建
         StateTask result = allowResume
                 ? flashPayStateMachineFacade.startOrResume(claim.getClaimNo(), String.valueOf(claim.getShopId()), payload)
                 : flashPayStateMachineFacade.start(claim.getClaimNo(), String.valueOf(claim.getShopId()), payload);
-        // 引擎输出的状态与结果说明需要回写，供用户查询申诉进度。
+        // StateEngine 执行完毕后，当前状态与最后一条节点产出的说明回写到申诉单，供用户查询申诉进度
         claim.setStatus(result.getCurrentState());
         claim.setResultMessage(result.getLastMessage());
+        // 把引擎回写的状态持久化到 DB，保证下次查询 / 重试能读到最新状态
         return domainService.updateClaim(claim);
     }
 }

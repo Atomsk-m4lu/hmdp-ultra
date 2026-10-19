@@ -60,13 +60,17 @@ public class StateEngine {
 
     /**
      * 启动一个新任务进入状态机。
-     *
+     * <p>典型场景：用户发起申诉单后，由 {@link com.hmdp.shared.domain.compensation.service.FlashPayStateMachineFacade}
+     * 驱动状态机流转，自动完成或转人工审核。</p>
      * @param task 新创建的任务（status=PENDING）
      * @return 执行结束后的任务（可能是COMPLETED/FAILED/MANUAL_REVIEW）
      */
     public StateTask start(StateTask task) {
+        // 状态从 PENDING → RUNNING，标记任务已进入执行阶段（与 resume 的区别：resume 是 FAILED/MANUAL_REVIEW → RUNNING）
         task.markRunning();
+        // 首次落库（insert），与 resume 的 update 形成对比：start 走 save，resume 走 update
         taskRepository.save(task);
+        // 进入 while 主循环，从 task.currentState（Facade 传进来的 SUBMITTED）开始驱动节点依次执行
         return run(task);
     }
 

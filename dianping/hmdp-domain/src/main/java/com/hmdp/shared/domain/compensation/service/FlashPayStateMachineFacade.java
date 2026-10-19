@@ -63,7 +63,17 @@ public class FlashPayStateMachineFacade {
      * @return 执行完毕后的 StateTask（COMPLETED 或 MANUAL_REVIEW）
      */
     public StateTask start(String claimNo, String shopId, FlashPayPayload payload) {
-        return stateEngine.start(StateTask.create(claimNo, shopId, FlashPayStateCode.MACHINE_CODE, FlashPayStateCode.SUBMITTED.name(), payload.serialize()));
+        // 组装 StateTask：
+        //   claimNo             → taskId（业务唯一标识，tb_state_task.uk_task_id）
+        //   shopId              → bizKey（同店铺任务隔离键）
+        //   MACHINE_CODE        → 路由到哪台状态机（StateEngine 用它查 Registry 拿 Definition）
+        //   SUBMITTED.name()    → 起始状态，闪赔流程从"已提交"开始流转
+        //   payload.serialize() → 业务参数序列化为 JSON 字符串，引擎不感知具体结构，由节点自行反序列化
+        return stateEngine.start(StateTask.create(claimNo,
+                shopId,
+                FlashPayStateCode.MACHINE_CODE,
+                FlashPayStateCode.SUBMITTED.name(),
+                payload.serialize()));
     }
 
     /**
