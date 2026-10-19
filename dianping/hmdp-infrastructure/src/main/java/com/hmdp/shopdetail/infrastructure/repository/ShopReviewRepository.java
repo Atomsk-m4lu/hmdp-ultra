@@ -5,8 +5,6 @@ import com.hmdp.entity.User;
 import com.hmdp.service.IUserService;
 import com.hmdp.shopdetail.domain.model.ShopReview;
 import com.hmdp.shopdetail.domain.model.ShopReviewSummary;
-import com.hmdp.shopdetail.domain.repository.ShopReviewRepository;
-import com.hmdp.shopdetail.infrastructure.persistence.dataobject.ShopReviewDO;
 import com.hmdp.shopdetail.infrastructure.persistence.mapper.ShopDetailReviewMapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import org.springframework.stereotype.Repository;
@@ -25,8 +23,9 @@ import java.util.stream.Stream;
  * 评价仓储实现（基础设施层）。
  * 负责：DO → 领域模型的转换、批量查库、批量补全用户昵称/头像（避免 N+1 问题）。
  */
+// 领域模型与 DO 都叫 ShopReview，接口与实现类又同名；这里用全限定名避免简单名冲突。
 @Repository
-public class ShopReviewRepository implements ShopReviewRepository {
+public class ShopReviewRepository implements com.hmdp.shopdetail.domain.repository.ShopReviewRepository {
 
     @Resource
     private ShopDetailReviewMapper shopDetailReviewMapper;
@@ -48,13 +47,13 @@ public class ShopReviewRepository implements ShopReviewRepository {
     @Override
     public List<ShopReview> findByShopId(Long shopId, int limit) {
         // ① 查评价 DO（数据对象）列表
-        QueryWrapper<ShopReviewDO> wrapper = new QueryWrapper<>();
+        QueryWrapper<com.hmdp.shopdetail.infrastructure.persistence.dataobject.ShopReview> wrapper = new QueryWrapper<>();
         wrapper.eq("shop_id", shopId).orderByDesc("create_time").last("limit " + limit);
-        List<ShopReviewDO> reviewDOS = shopDetailReviewMapper.selectList(wrapper);
+        List<com.hmdp.shopdetail.infrastructure.persistence.dataobject.ShopReview> reviewDOS = shopDetailReviewMapper.selectList(wrapper);
 
         // ② 批量查用户：收集所有 userId → 一次性查 → 按 id 建成 Map（O(1) 查找）
         Set<Long> userIds = reviewDOS.stream()
-                .map(ShopReviewDO::getUserId)
+                .map(com.hmdp.shopdetail.infrastructure.persistence.dataobject.ShopReview::getUserId)
                 .filter(Objects::nonNull)
                 .collect(Collectors.toSet());
         Map<Long, User> userMap = userIds.isEmpty() ? Collections.emptyMap()
@@ -111,7 +110,7 @@ public class ShopReviewRepository implements ShopReviewRepository {
      * DO → ShopReview 领域模型的转换方法。
      * 除字段直接映射外，额外从 userMap 查用户昵称/头像补齐（避免 N+1）。
      */
-    private ShopReview toDomain(ShopReviewDO dataObject, Map<Long, User> userMap) {
+    private ShopReview toDomain(com.hmdp.shopdetail.infrastructure.persistence.dataobject.ShopReview dataObject, Map<Long, User> userMap) {
         ShopReview review = new ShopReview();
         review.setId(dataObject.getId());
         review.setShopId(dataObject.getShopId());
