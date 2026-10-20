@@ -21,14 +21,16 @@ import java.util.function.Function;
  * <ol>
  *   <li><b>L1 存完整的 RedisData 结构</b>（含逻辑过期时间）——命中也要校验过期，
  *       避免"本地缓存把过期数据续命"放大脏读窗口；</li>
- *   <li><b>L2 直接委派既有的 {@link CacheClient#queryWithLogicalExpire}</b>
- *       （互斥锁 + 独立线程池异步重建），模板零改动——多级是"叠加"不是"替换"；</li>
+ *   <li><b>L2 命中/过期仍委派既有的 {@link CacheClient#queryWithLogicalExpire}</b>
+ *       （互斥锁 + 独立线程池异步重建）；key 不存在时走 {@link CacheClient#loadOnMiss}
+ *       同步回源（冷启动/删缓存后），不再依赖"必须预热"；</li>
  *   <li><b>失效广播用 RocketMQ BROADCASTING 模式</b>（每实例必达，见 CacheInvalidationListener），
  *       广播失败只降级为日志——L1 条目自身的逻辑过期时间是最终兜底。</li>
  * </ol></p>
  *
- * <p>读路径三条分支：L1 命中未过期 → 直接返回；L1 未命中或已逻辑过期 → 读 L2 原始结构并回填 L1，
- * L2 未过期返回，已过期则委派模板触发重建并返回旧数据（与逻辑过期语义一致）。</p>
+ * <p>读路径：L1 命中未过期 → 直接返回；L1 未命中或已逻辑过期 → 读 L2 原始结构并回填 L1；
+ * L2 未过期返回，已过期委派模板触发重建并返回旧数据；L2 key 不存在 → loadOnMiss 同步回源，
+ * 空值标记则直接返回 null（负缓存）。</p>
  */
 @Slf4j
 @Component
@@ -44,7 +46,7 @@ public class MultiLevelCacheService {
     @Resource
     private Cache<String, Object> shopLocalCache;
 
-    /** L2：既有单级缓存模板（逻辑过期 + 互斥锁 + 异步重建），零改动复用 */
+    /** L2：既有单级缓存模板（逻辑过期 + 互斥锁 + 异步重建 + 冷 key 回源） */
     @Resource
     private CacheClient cacheClient;
 
@@ -62,7 +64,7 @@ public class MultiLevelCacheService {
      * @param keyPrefix  Redis key 前缀（如 cache:shop:）
      * @param id         业务 ID
      * @param type       返回类型
-     * @param dbFallback 查库函数（仅重建时被模板调用）
+     * @param dbFallback 查库函数（逻辑过期重建 / 冷 key 回源时使用）
      * @param time       逻辑过期时长
      * @param unit       时间单位
      */
@@ -78,19 +80,25 @@ public class MultiLevelCacheService {
             return (R) ((RedisData) cached).getData();
         }
 
-        // ── L1 未命中或已逻辑过期 → 读 L2 原始结构（空白缓存的语义与单级模板一致：依赖预热）──
+        // ── L1 未命中或已逻辑过期 → 读 L2 原始结构 ──
         String json = stringRedisTemplate.opsForValue().get(key);
+        if (json == null) {
+            // 冷启动或 update/评分刷新删除后的空 key：同步回源并重建，不能直接返回 null
+            R loaded = cacheClient.loadOnMiss(keyPrefix, id, type, dbFallback, time, unit);
+            if (loaded != null) {
+                fillL1(key, loaded, LocalDateTime.now().plusSeconds(unit.toSeconds(time)));
+            }
+            return loaded;
+        }
         if (StrUtil.isBlank(json)) {
+            // 空值标记：DB 已确认不存在，短 TTL 内直接挡掉
             return null;
         }
         RedisData redisData = JSONUtil.toBean(json, RedisData.class);
         R data = JSONUtil.toBean((JSONObject) redisData.getData(), type);
         // 回填 L1：data 存"已反序列化的对象"（而非原始 JSONObject，避免命中时类型转换异常），
         // 过期时间沿用 Redis 侧的真实值——过期条目不会被"续命"，下次命中自然回落到 L2
-        RedisData l1Data = new RedisData();
-        l1Data.setData(data);
-        l1Data.setExpireTime(redisData.getExpireTime());
-        shopLocalCache.put(key, l1Data);
+        fillL1(key, data, redisData.getExpireTime());
         if (isFresh(redisData)) {
             log.debug("[多级缓存] L2 命中: {}", key);
             return data;
@@ -123,6 +131,14 @@ public class MultiLevelCacheService {
         } catch (Exception e) {
             log.warn("[多级缓存] 广播失效发送失败（L1 逻辑过期兜底）, key={}", keyPrefix + id, e);
         }
+    }
+
+    /** 回填 L1：data 存已反序列化对象，过期时间沿用 Redis 侧真实值。 */
+    private void fillL1(String key, Object data, LocalDateTime expireTime) {
+        RedisData l1Data = new RedisData();
+        l1Data.setData(data);
+        l1Data.setExpireTime(expireTime);
+        shopLocalCache.put(key, l1Data);
     }
 
     /** 逻辑过期校验：带过期时间且尚未到期 */
