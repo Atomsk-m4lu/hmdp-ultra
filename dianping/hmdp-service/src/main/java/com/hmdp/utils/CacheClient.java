@@ -234,23 +234,30 @@ public class CacheClient {
         String key = keyPrefix + id;
         String lockKey = RedisConstants.LOCK_SHOP_KEY + id;
 
+        // 最多等 20 × 50ms = 1 秒，超时兜底直接查 DB
         for (int attempt = 0; attempt < 20; attempt++) {
             if (tryLock(lockKey)) {
                 try {
+                    // 锁内二次检查：拿到锁后先查一次 Redis，
+                    // 可能别的线程已经重建完了（避免重复查 DB + 覆盖新数据）
                     String current = stringRedisTemplate.opsForValue().get(key);
                     if (current != null) {
                         if (StrUtil.isBlank(current)) {
+                            // 空值标记：之前已经穿透防护过，直接返回 null
                             return null;
                         }
                         R fresh = readFresh(current, type);
                         if (fresh != null) {
+                            // 缓存里有未过期数据，直接读走，不碰 DB
                             return fresh;
                         }
-                        // 已存在但逻辑过期：拿到锁就顺手重建
+                        // 缓存存在但已逻辑过期 / 格式坏掉：拿到锁就顺手重建
                     }
 
+                    // ── 真正回源 DB ──
                     R data = dbFallback.apply(id);
                     if (data == null) {
+                        // DB 查不到 → 写空值缓存（防穿透）
                         try {
                             stringRedisTemplate.opsForValue().set(
                                     key, "", RedisConstants.CACHE_NULL_TTL, TimeUnit.MINUTES);
@@ -259,6 +266,7 @@ public class CacheClient {
                         }
                         return null;
                     }
+                    // DB 有数据 → 写 Redis（带逻辑过期）
                     try {
                         this.setWithLogicalExpire(key, data, time, unit);
                     } catch (Exception e) {
@@ -266,6 +274,7 @@ public class CacheClient {
                     }
                     return data;
                 } finally {
+                    // 保证锁一定释放，unLock 自身异常不影响主流程
                     try {
                         unLock(lockKey);
                     } catch (Exception e) {
@@ -274,13 +283,16 @@ public class CacheClient {
                 }
             }
 
-            // 别的线程正在回源：短暂等待后重读，避免并发请求一起打 DB
+            // ── 没拿到锁：别的线程正在回源 ──
+            // 短暂 sleep 让 CPU 不忙等，随后重读 Redis 看别人有没有写完
             try {
                 Thread.sleep(50L);
             } catch (InterruptedException e) {
+                // 被中断 → 恢复中断标记 + 直接回源 DB（不写缓存，保证这次请求拿到结果）
                 Thread.currentThread().interrupt();
                 return dbFallback.apply(id);
             }
+            // 睡眠后重读 Redis：如果锁内线程已经写完，这里能直接读到
             String current = stringRedisTemplate.opsForValue().get(key);
             if (current != null) {
                 if (StrUtil.isBlank(current)) {
@@ -290,10 +302,12 @@ public class CacheClient {
                 if (fresh != null) {
                     return fresh;
                 }
+                // 读到了但还是过期/坏掉 → 下一轮循环继续抢锁
             }
         }
 
-        // 锁竞争超时：不写缓存，直接回源一次，保证这次请求拿得到数据
+        // 20 次循环后还没拿到锁 → 锁竞争超时
+        // 不写缓存，直接回源一次 DB，保证这次请求总能拿到数据
         return dbFallback.apply(id);
     }
 
