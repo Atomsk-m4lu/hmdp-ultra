@@ -1,0 +1,76 @@
+package com.hmdp.shared.infrastructure.repository;
+
+import com.hmdp.shared.stateengine.model.StateTask;
+import com.hmdp.shared.infrastructure.persistence.mapper.StateTaskMapper;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
+import org.springframework.dao.DuplicateKeyException;
+import org.springframework.test.util.ReflectionTestUtils;
+
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+class MybatisStateTaskRepositoryTest {
+
+    private StateTaskMapper mapper;
+    private MybatisStateTaskRepository repository;
+
+    @BeforeEach
+    void setUp() {
+        mapper = mock(StateTaskMapper.class);
+        repository = new MybatisStateTaskRepository();
+        ReflectionTestUtils.setField(repository, "stateTaskMapper", mapper);
+    }
+
+    @Test
+    void save_should_swallow_duplicate_key_on_concurrent_start() {
+        when(mapper.insert(any())).thenThrow(new DuplicateKeyException("uk_task_id"));
+
+        StateTask task = StateTask.create("claim-1", "shop-1", "FLASH_PAY", "SUBMITTED", "FLASH_PAY|reason");
+
+        assertDoesNotThrow(() -> repository.save(task));
+        verify(mapper).insert(any());
+    }
+
+    @Test
+    void update_should_fall_back_to_conditional_update_when_insert_races() {
+        // 第一次 selectOne 查无此行 → 走 insert → 撞唯一键（并发首投抢先）→ 重新走 select+条件更新
+        com.hmdp.shared.infrastructure.persistence.dataobject.StateTask existing =
+                new com.hmdp.shared.infrastructure.persistence.dataobject.StateTask();
+        existing.setId(9L);
+        existing.setTaskId("claim-1");
+        existing.setRuntimeStatus("PENDING");
+        when(mapper.selectOne(any())).thenReturn(null, existing);
+        when(mapper.insert(any())).thenThrow(new DuplicateKeyException("uk_task_id"));
+        when(mapper.update(isNull(), any())).thenReturn(1);
+
+        StateTask task = StateTask.create("claim-1", "shop-1", "FLASH_PAY", "SUBMITTED", "FLASH_PAY|reason");
+
+        assertDoesNotThrow(() -> repository.update(task));
+        verify(mapper).update(isNull(), any());
+        verify(mapper, Mockito.times(2)).selectOne(any());
+    }
+
+    @Test
+    void update_should_not_insert_again_when_task_exists() {
+        com.hmdp.shared.infrastructure.persistence.dataobject.StateTask existing =
+                new com.hmdp.shared.infrastructure.persistence.dataobject.StateTask();
+        existing.setId(9L);
+        existing.setTaskId("claim-1");
+        existing.setRuntimeStatus("RUNNING");
+        when(mapper.selectOne(any())).thenReturn(existing);
+        when(mapper.update(isNull(), any())).thenReturn(1);
+
+        StateTask task = StateTask.create("claim-1", "shop-1", "FLASH_PAY", "SUBMITTED", "FLASH_PAY|reason");
+        repository.update(task);
+
+        verify(mapper, never()).insert(any());
+        verify(mapper).update(isNull(), any());
+    }
+}
