@@ -60,6 +60,72 @@ class TaskChainEngineTest {
         assertEquals("shop-blogs", context.getOutput());
     }
 
+    @Test
+    void should_skip_following_phase_when_parallel_phase_times_out() {
+        // 并行阶段节点慢于阶段超时 → 阶段失败（failOnError=true）→ 链路熔断，POST_PROCESSING 不执行
+        AtomicInteger postPhaseRuns = new AtomicInteger();
+        TaskNodeHandler<Long, String> slow = context -> {
+            try {
+                Thread.sleep(500L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            context.setAttribute("a", "shop");
+        };
+        TaskNodeHandler<Long, String> assemble = context -> {
+            postPhaseRuns.incrementAndGet();
+            context.setOutput("should-not-run");
+        };
+
+        List<TaskNodeHolder> nodes = Arrays.asList(
+                parallel("slow", ProcessPhase.DATA_PROCESSING, slow),
+                serial("assemble", ProcessPhase.POST_PROCESSING, assemble)
+        );
+
+        TaskChainEngine engine = createEngine(nodes);
+        TaskContext<Long, String> context = new TaskContext<>();
+        context.setInput(1L);
+
+        engine.executePhaseChain(nodes, context, Arrays.asList(
+                new PhaseConfig(ProcessPhase.DATA_PROCESSING, ExecutionMode.PARALLEL, true, 100L),
+                new PhaseConfig(ProcessPhase.POST_PROCESSING, ExecutionMode.SERIAL)
+        ));
+
+        assertEquals(0, postPhaseRuns.get());
+        assertEquals(false, context.isSuccess());
+        assertEquals(true, context.isTerminateChain());
+    }
+
+    @Test
+    void should_continue_chain_when_phase_fails_with_failOnError_false() {
+        // failOnError=false 的阶段失败 → 引擎不熔断，后续阶段继续执行
+        AtomicInteger postPhaseRuns = new AtomicInteger();
+        TaskNodeHandler<Long, String> failing = context -> {
+            throw new IllegalStateException("query node down");
+        };
+        TaskNodeHandler<Long, String> assemble = context -> {
+            postPhaseRuns.incrementAndGet();
+            context.setOutput("done");
+        };
+
+        List<TaskNodeHolder> nodes = Arrays.asList(
+                parallelSkippable("failing", ProcessPhase.DATA_PROCESSING, failing),
+                serial("assemble", ProcessPhase.POST_PROCESSING, assemble)
+        );
+
+        TaskChainEngine engine = createEngine(nodes);
+        TaskContext<Long, String> context = new TaskContext<>();
+        context.setInput(1L);
+
+        engine.executePhaseChain(nodes, context, Arrays.asList(
+                new PhaseConfig(ProcessPhase.DATA_PROCESSING, ExecutionMode.PARALLEL, false, 0L),
+                new PhaseConfig(ProcessPhase.POST_PROCESSING, ExecutionMode.SERIAL)
+        ));
+
+        assertEquals(1, postPhaseRuns.get());
+        assertEquals("done", context.getOutput());
+    }
+
     private TaskChainEngine createEngine(List<TaskNodeHolder> nodes) {
         TaskNodeRegistry registry = new TaskNodeRegistry(nodes);
         TaskDispatcher dispatcher = new TaskDispatcher(
@@ -74,11 +140,20 @@ class TaskChainEngineTest {
         return new TaskNodeHolder(handler, annotation(nodeId, phase, TaskTypeEnum.IO_BOUND));
     }
 
+    /** 可跳过的并行节点：失败时 dispatchNodeAsync 不置 terminate，用于单测 failOnError 分支 */
+    private TaskNodeHolder parallelSkippable(String nodeId, ProcessPhase phase, TaskNodeHandler<Long, String> handler) {
+        return new TaskNodeHolder(handler, annotation(nodeId, phase, TaskTypeEnum.IO_BOUND, true));
+    }
+
     private TaskNodeHolder serial(String nodeId, ProcessPhase phase, TaskNodeHandler<Long, String> handler) {
         return new TaskNodeHolder(handler, annotation(nodeId, phase, TaskTypeEnum.CPU_BOUND));
     }
 
     private TaskNode annotation(String nodeId, ProcessPhase phase, TaskTypeEnum taskTypeEnum) {
+        return annotation(nodeId, phase, taskTypeEnum, false);
+    }
+
+    private TaskNode annotation(String nodeId, ProcessPhase phase, TaskTypeEnum taskTypeEnum, boolean skippable) {
         return new TaskNode() {
             @Override
             public String nodeId() {
@@ -107,7 +182,7 @@ class TaskChainEngineTest {
 
             @Override
             public boolean skippable() {
-                return false;
+                return skippable;
             }
 
             @Override

@@ -61,8 +61,9 @@
 ### 🧠 多级缓存与失效广播
 
 - **三级读取路径**：Caffeine 本地缓存（L1）→ Redis 逻辑过期（L2，复用 `CacheClient` 模板）→ MySQL；L1 存"已反序列化对象 + 真实逻辑过期时间"，命中也要校验过期
+- **冷 key 回源**：L2 key 不存在时 `loadOnMiss` 互斥回源 DB，查到写逻辑过期结构、查不到写 2 分钟空值标记；update/评分刷新/冷启动不再依赖预热
 - **写路径一致性**：先更库 → 本地 + Redis 双删 → RocketMQ **BROADCASTING** 广播失效（每实例必达）+ "从头消费"冷启动修正；广播失败由 L1 自身逻辑过期兜底
-- **可回退**：`cache.local.enabled=false` 一键回到单级 Redis 链路；命中率指标 `hmdp_cache_local_hits_total / misses_total` 接入 Prometheus
+- **可回退**：`cache.local.enabled=false` 一键回到单级 Redis 链路（单级模板同样支持冷 key 回源）；命中率指标 `hmdp_cache_local_hits_total / misses_total` 接入 Prometheus
 
 ### 🧪 故障演练与压测闭环
 

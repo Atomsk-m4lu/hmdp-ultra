@@ -6,6 +6,7 @@ import com.hmdp.shared.stateengine.model.StateTask;
 import com.hmdp.shared.stateengine.model.StateTaskStatus;
 import com.hmdp.shared.stateengine.spi.StateTaskRepository;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Repository;
 
 import javax.annotation.Resource;
@@ -25,7 +26,14 @@ public class MybatisStateTaskRepository implements StateTaskRepository {
 
     @Override
     public void save(StateTask task) {
-        stateTaskMapper.insert(toDataObject(task));
+        try {
+            stateTaskMapper.insert(toDataObject(task));
+        } catch (DuplicateKeyException e) {
+            // 并发首投兜底：startOrResume 是"先查后启"，同一 taskId 的两个并发首次提交
+            // 都可能查不到任务而走到 save；后到者撞 uk_task_id。输家在此降级为日志，
+            // 让赢家继续驱动任务（后续 update 走条件更新，输家的写入会被 CAS 挡住）。
+            log.warn("state task duplicate insert skipped (concurrent start), taskId={}", task.getTaskId());
+        }
     }
 
     @Override
@@ -52,7 +60,15 @@ public class MybatisStateTaskRepository implements StateTaskRepository {
                         task.getTaskId(), existing.getRuntimeStatus());
             }
         } else {
-            stateTaskMapper.insert(toDataObject(task));
+            try {
+                stateTaskMapper.insert(toDataObject(task));
+            } catch (DuplicateKeyException e) {
+                // 查无此行但插入撞唯一键 = 查与插之间被并发首投抢先：降级重走一遍
+                // "select → 条件更新" 主路径（此时必然能查到，不会无限递归）
+                log.warn("state task insert raced with concurrent start, fallback to update, taskId={}",
+                        task.getTaskId());
+                update(task);
+            }
         }
     }
 
