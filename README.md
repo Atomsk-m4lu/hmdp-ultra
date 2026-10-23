@@ -1,6 +1,10 @@
 <p align="right"><b>简体中文</b> | <a href="./README_EN.md">English</a></p>
 
+<div align="center">
+
 # 🐴 hmdp-ultra — 黑马点评深度魔改版
+
+一个基于**黑马点评**（大众点评类本地生活平台）的**深度魔改学习项目**
 
 ![Java](https://img.shields.io/badge/Java-8%2B-orange)
 ![Spring Boot](https://img.shields.io/badge/Spring%20Boot-2.x-green)
@@ -11,9 +15,11 @@
 ![Caffeine](https://img.shields.io/badge/Caffeine-L1%20缓存-brown)
 ![JMeter](https://img.shields.io/badge/JMeter-压测-orange)
 ![Arthas](https://img.shields.io/badge/Arthas-诊断-red)
-![Seckill](https://img.shields.io/badge/秒杀-4000并发·零超卖-success)
 
-一个基于**黑马点评**（大众点评类本地生活平台）的**深度魔改学习项目**。
+![Seckill](https://img.shields.io/badge/秒杀-4000并发·零超卖-success)
+![GitHub stars](https://img.shields.io/github/stars/Atomsk-m4lu/hmdp-ultra?style=social&label=Stars)
+
+</div>
 
 原版项目解决了"从 0 到 1"——秒杀、缓存、签到、附近的人。本仓库聚焦"**从 1 到 10**"：当系统变复杂之后——
 
@@ -60,9 +66,14 @@
 
 ### 🧪 故障演练与压测闭环
 
+<details>
+<summary><b>7 类 JVM 故障注入开关、巡检流程与演练工具链</b>（点击展开）</summary>
+
 - 7 类 JVM 故障注入开关：CPU 自旋、正则灾难性回溯、堆内存泄漏、ThreadLocal 泄漏、死锁、线程爆炸、大对象分配
 - JVM 巡检流程：10 项基线巡检 + 死锁 / CPU 两场实战演练（`thread -b` 实锤死锁、jstack 火焰栈实锤热点），产出 HTML 报告
 - JMeter 压测脚本（一键清库 / 同步库存 / 批量造 Token）+ Arthas 排查演练（dashboard / thread / jad / watch）
+
+</details>
 
 ### 📊 五轮压测矩阵（实测归档）
 
@@ -74,6 +85,7 @@
 | R4 缓存 | 多级缓存 L1 · 开 / 关 | 开：50 请求 **L1 命中 45、Redis 读流量省 90%**；关：每次请求打 Redis |
 | R5 故障 | CPU 自旋注入 | 冷 JIT 单请求 **10–16s（约 775×）**，jstack 抓到 26 层火焰栈直指注入点 `fibonacciWarmup` |
 
+> [!TIP]
 > 原始数据（JTL / 日志 / 火焰栈 / 四份分析报告）见 [`dianping/stress-test`](dianping/stress-test)。
 
 ---
@@ -102,6 +114,7 @@ flowchart TD
     SVC --> INFRA
 ```
 
+> [!NOTE]
 > domain 层不依赖任何外层模块，是整个项目可复用的核心；infrastructure 反向实现 domain 定义的 SPI 接口（依赖倒置）。
 
 ### 秒杀主链路
@@ -203,13 +216,43 @@ curl http://localhost:8081/actuator/health
 
 ## ⚖️ 设计取舍（Known Trade-offs）
 
-本项目有意保留了一些**已被识别的取舍点**，用于展示工程决策过程：
+> [!NOTE]
+> 本项目有意保留了一些**已被识别的取舍点**，用于展示工程决策过程：
 
-1. **关单双路径的时序（2026-10-17 已修复）**——曾用延时档位 14（RocketMQ 默认 10 分钟），早于 15 分钟关单门槛导致延时消息白跑；现已把档位调到 15（20 分钟）：正常关单仍由每 2 分钟的兜底 Job 完成（约 16 分钟），延时消息只在兜底 Job 失效时作为最后备份生效。
-2. **批量消费不向 MQ 回抛异常**——单条失败由批量监听器捕获后直接写入 recovery_task（恢复任务重放兜底），另有建单校验与对账兜底，换取批处理吞吐；代价是主动放弃 MQ 层自动重试语义（重试语义上移到业务任务层）。
-3. **对账自动补偿默认关闭**——先观察异常模式再人工开启，避免补偿逻辑本身放大故障。
-4. **发送失败语义冲突**——"回滚 + 提示重试"与"本地消息表补发建单"两条路径并存：被回滚用户的订单仍可能被补发任务建出（唯一键保证不会重复建单，但提示语义冲突）。修复方向二选一：回滚时同步作废重试记录，或提示语改为"处理中"。
-5. **对账体系以 DB 留痕为锚**——"Redis 已动、DB 未留痕"的中间态对现有四级兜底不可见（故障演练中实弹暴露 4 例 Redis 预占残留）。改进方向：把预扣追踪日志纳入对账数据源。
+<details>
+<summary><b>1. 关单双路径的时序</b>（2026-10-17 已修复）</summary>
+
+曾用延时档位 14（RocketMQ 默认 10 分钟），早于 15 分钟关单门槛导致延时消息白跑；现已把档位调到 15（20 分钟）：正常关单仍由每 2 分钟的兜底 Job 完成（约 16 分钟），延时消息只在兜底 Job 失效时作为最后备份生效。
+
+</details>
+
+<details>
+<summary><b>2. 批量消费不向 MQ 回抛异常</b></summary>
+
+单条失败由批量监听器捕获后直接写入 recovery_task（恢复任务重放兜底），另有建单校验与对账兜底，换取批处理吞吐；代价是主动放弃 MQ 层自动重试语义（重试语义上移到业务任务层）。
+
+</details>
+
+<details>
+<summary><b>3. 对账自动补偿默认关闭</b></summary>
+
+先观察异常模式再人工开启，避免补偿逻辑本身放大故障。
+
+</details>
+
+<details>
+<summary><b>4. 发送失败语义冲突</b></summary>
+
+"回滚 + 提示重试"与"本地消息表补发建单"两条路径并存：被回滚用户的订单仍可能被补发任务建出（唯一键保证不会重复建单，但提示语义冲突）。修复方向二选一：回滚时同步作废重试记录，或提示语改为"处理中"。
+
+</details>
+
+<details>
+<summary><b>5. 对账体系以 DB 留痕为锚</b></summary>
+
+"Redis 已动、DB 未留痕"的中间态对现有四级兜底不可见（故障演练中实弹暴露 4 例 Redis 预占残留）。改进方向：把预扣追踪日志纳入对账数据源。
+
+</details>
 
 ---
 

@@ -1,6 +1,10 @@
 <p align="right"><a href="./README.md">简体中文</a> | <b>English</b></p>
 
+<div align="center">
+
 # 🐴 hmdp-ultra — Heima Dianping, Deeply Customized
+
+A **deeply customized learning project** based on **Heima Dianping** (a Yelp-like local lifestyle platform)
 
 ![Java](https://img.shields.io/badge/Java-8%2B-orange)
 ![Spring Boot](https://img.shields.io/badge/Spring%20Boot-2.x-green)
@@ -11,9 +15,11 @@
 ![Caffeine](https://img.shields.io/badge/Caffeine-L1%20Cache-brown)
 ![JMeter](https://img.shields.io/badge/JMeter-Load%20Test-orange)
 ![Arthas](https://img.shields.io/badge/Arthas-Diagnostics-red)
-![Seckill](https://img.shields.io/badge/Seckill-4000%20Concurrent%20%C2%B7%20Zero%20Oversell-success)
 
-A **deeply customized learning project** based on **Heima Dianping** (a Yelp-like local lifestyle platform).
+![Seckill](https://img.shields.io/badge/Seckill-4000%20Concurrent%20%C2%B7%20Zero%20Oversell-success)
+![GitHub stars](https://img.shields.io/github/stars/Atomsk-m4lu/hmdp-ultra?style=social&label=Stars)
+
+</div>
 
 The original project solved the "from 0 to 1" problem — seckill, caching, check-ins, and nearby users. This repository focuses on "**from 1 to 10**": what happens when the system grows complex —
 
@@ -60,9 +66,14 @@ The original project solved the "from 0 to 1" problem — seckill, caching, chec
 
 ### 🧪 Fault Drills and Load-Test Loop
 
+<details>
+<summary><b>7 types of JVM fault-injection switches, inspection workflow, and drill toolchain</b> (click to expand)</summary>
+
 - 7 types of JVM fault-injection switches: CPU spin, catastrophic regex backtracking, heap memory leak, ThreadLocal leak, deadlock, thread explosion, large-object allocation
 - JVM inspection workflow: a 10-item baseline inspection + two hands-on drills (deadlock / CPU; `thread -b` to pin down deadlocks, jstack flame stacks to pin down hotspots), producing HTML reports
 - JMeter load-test scripts (one-click DB cleanup / stock sync / batch token generation) + Arthas troubleshooting drills (dashboard / thread / jad / watch)
+
+</details>
 
 ### 📊 Five-Round Load-Test Matrix (Measured and Archived)
 
@@ -74,6 +85,7 @@ The original project solved the "from 0 to 1" problem — seckill, caching, chec
 | R4 Cache | Multi-level cache L1 · on / off | On: 50 requests — **45 L1 hits, 90% less Redis read traffic**; Off: every request hits Redis |
 | R5 Fault | CPU spin injection | Cold JIT: single request took **10–16s (~775×)**; jstack captured a 26-level flame stack pointing straight at the injection point `fibonacciWarmup` |
 
+> [!TIP]
 > Raw data (JTL / logs / flame stacks / four analysis reports) is in [`dianping/stress-test`](dianping/stress-test).
 
 ---
@@ -102,6 +114,7 @@ flowchart TD
     SVC --> INFRA
 ```
 
+> [!NOTE]
 > The domain layer depends on no outer modules and is the reusable core of the project; infrastructure implements the SPI interfaces defined by domain in reverse (dependency inversion).
 
 ### Seckill Main Flow
@@ -203,13 +216,43 @@ curl http://localhost:8081/actuator/health
 
 ## ⚖️ Design Trade-offs (Known Trade-offs)
 
-This project intentionally keeps several **identified trade-offs** on display, to show the engineering decision-making process:
+> [!NOTE]
+> This project intentionally keeps several **identified trade-offs** on display, to show the engineering decision-making process:
 
-1. **Timing of the dual cancellation paths (fixed on 2026-10-17)** — the delayed-message level 14 (RocketMQ default 10 minutes) used to fire earlier than the 15-minute cancellation threshold, wasting the delayed message; the level is now set to 15 (20 minutes): normal cancellation is still handled by the fallback Job every 2 minutes (~16 minutes), and the delayed message only acts as a last-resort backup when the fallback Job fails.
-2. **Batch consumption does not rethrow exceptions to MQ** — single-message failures are caught by the batch listener and written directly to recovery_task (replayed by the recovery fallback), with order verification and reconciliation as additional fallbacks, in exchange for batch throughput; the cost is giving up MQ-level automatic retry semantics (retry semantics move up to the business task layer).
-3. **Automatic reconciliation compensation is off by default** — observe anomaly patterns first, then enable manually, avoiding the compensation logic itself amplifying the failure.
-4. **Send-failure semantic conflict** — two paths coexist: "rollback + prompt to retry" and "local-message-table re-send creating the order": the order of a rolled-back user may still be created by the re-send task (the unique key prevents duplicates, but the prompt semantics conflict). Two possible fixes: invalidate the retry record synchronously upon rollback, or change the prompt to "processing".
-5. **The reconciliation system is anchored on DB persistence** — the intermediate state of "Redis touched, DB not yet recorded" is invisible to the current four-level fallback (4 real cases of residual Redis pre-holds were exposed during fault drills). Improvement direction: include pre-deduction tracking logs in the reconciliation data source.
+<details>
+<summary><b>1. Timing of the dual cancellation paths</b> (fixed on 2026-10-17)</summary>
+
+The delayed-message level 14 (RocketMQ default 10 minutes) used to fire earlier than the 15-minute cancellation threshold, wasting the delayed message; the level is now set to 15 (20 minutes): normal cancellation is still handled by the fallback Job every 2 minutes (~16 minutes), and the delayed message only acts as a last-resort backup when the fallback Job fails.
+
+</details>
+
+<details>
+<summary><b>2. Batch consumption does not rethrow exceptions to MQ</b></summary>
+
+Single-message failures are caught by the batch listener and written directly to recovery_task (replayed by the recovery fallback), with order verification and reconciliation as additional fallbacks, in exchange for batch throughput; the cost is giving up MQ-level automatic retry semantics (retry semantics move up to the business task layer).
+
+</details>
+
+<details>
+<summary><b>3. Automatic reconciliation compensation is off by default</b></summary>
+
+Observe anomaly patterns first, then enable manually, avoiding the compensation logic itself amplifying the failure.
+
+</details>
+
+<details>
+<summary><b>4. Send-failure semantic conflict</b></summary>
+
+Two paths coexist: "rollback + prompt to retry" and "local-message-table re-send creating the order": the order of a rolled-back user may still be created by the re-send task (the unique key prevents duplicates, but the prompt semantics conflict). Two possible fixes: invalidate the retry record synchronously upon rollback, or change the prompt to "processing".
+
+</details>
+
+<details>
+<summary><b>5. The reconciliation system is anchored on DB persistence</b></summary>
+
+The intermediate state of "Redis touched, DB not yet recorded" is invisible to the current four-level fallback (4 real cases of residual Redis pre-holds were exposed during fault drills). Improvement direction: include pre-deduction tracking logs in the reconciliation data source.
+
+</details>
 
 ---
 
