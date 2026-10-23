@@ -3,6 +3,7 @@ package com.hmdp.shared.domain.taskchain.service;
 import com.hmdp.shared.domain.taskchain.enums.ExecutionMode;
 import com.hmdp.shared.domain.taskchain.enums.ProcessPhase;
 import com.hmdp.shared.domain.taskchain.model.PhaseConfig;
+import com.hmdp.shared.domain.taskchain.model.PhaseExecutionResult;
 import com.hmdp.shared.domain.taskchain.model.TaskContext;
 import com.hmdp.shared.domain.taskchain.model.TaskNodeRegistry;
 import com.hmdp.shared.domain.taskchain.model.TaskNodeHolder;
@@ -141,18 +142,20 @@ public class TaskChainEngine {
 
     // ========================================================================
     // 私有核心方法: 所有公开入口最终汇聚到这里
-    //   职责 = 遍历 phaseConfigs → 检查 terminateChain → 委托 PhaseEngine
+    //   职责 = 遍历 phaseConfigs → 检查 terminateChain → 委托 PhaseEngine → 按阶段结果熔断
     // ========================================================================
 
     /**
      * 任务链引擎的核心驱动循环
      * <p>
      * 所有公开入口 (executeChain / executePhaseChain 的两个重载) 最终都把数据准备好后交给这里。
-     * 3 行核心逻辑:
+     * 核心逻辑:
      * <ol>
      *   <li>遍历 phaseConfigs (注意顺序是调用方传入的顺序, 不是 ProcessPhase 的 order)</li>
-     *   <li>每次循环开头检查 context.terminateChain —— 某个不可跳过的节点失败时, 引擎立即 break, 后续 Phase 不再执行</li>
+     *   <li>每次循环开头检查 context.terminateChain —— 已置位时立即 break, 后续 Phase 不再执行</li>
      *   <li>委托给 PhaseExecutionEngine.executePhase, PhaseEngine 根据 ExecutionMode 决定串行还是并行跑该阶段的节点</li>
+     *   <li>检查 executePhase 返回的 PhaseExecutionResult —— failOnError 的阶段失败
+     *       (节点失败/阶段超时) 时置 terminateChain 并 break, 防止残缺数据流入下游组装</li>
      * </ol>
      * </p>
      *
@@ -163,14 +166,22 @@ public class TaskChainEngine {
     private <I, O> TaskContext<I, O> executePhaseChain(Map<ProcessPhase, List<TaskNodeHolder>> phaseNodesMap, TaskContext<I, O> context, List<PhaseConfig> phaseConfigs) {
         // 遍历调用方指定的阶段配置列表，列表顺序就是阶段的执行顺序（不是 ProcessPhase 枚举的 order）
         for (PhaseConfig phaseConfig : phaseConfigs) {
-            // 链路级熔断：每次循环开头检查生死开关，不可跳过的节点失败时置为 true，立即终止后续所有阶段
+            // 链路级熔断：每次循环开头检查生死开关，立即终止后续所有阶段
             if (context.isTerminateChain()) {
                 break;
             }
             // 从预先分好组的 Map 里取出当前阶段的节点列表（Registry 启动时已按 group+order 排好序）
             List<TaskNodeHolder> phaseNodes = phaseNodesMap.get(phaseConfig.getPhase());
             // 委托给 PhaseExecutionEngine：Engine 根据 phaseConfig.executionMode 决定串行 or 并行跑 phaseNodes
-            phaseExecutionEngine.executePhase(phaseConfig, phaseNodes, context);
+            PhaseExecutionResult result = phaseExecutionEngine.executePhase(phaseConfig, phaseNodes, context);
+            // 阶段级熔断：failOnError 的阶段失败（节点失败/阶段超时）→ 置生死开关并终止后续阶段。
+            // 此前 executePhase 的返回值被整体丢弃，阶段超时只 markFailed 不置 terminate，
+            // 下游阶段会带着残缺数据继续跑（如商详链 Assemble 拿不到并行查询结果）。
+            // failOnError=false 的阶段 executePhase 对失败返回 success，语义为"失败可继续"，不会进入此分支。
+            if (!result.isSuccess()) {
+                context.markTerminate();
+                break;
+            }
         }
         // 返回同一个 context 对象，调用方从 context.getOutput() 拿最终结果，从 getAttribute 拿中间数据
         return context;
