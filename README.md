@@ -1,3 +1,5 @@
+<p align="right"><b>简体中文</b> | <a href="./README_EN.md">English</a></p>
+
 # 🐴 hmdp-ultra — 黑马点评深度魔改版
 
 ![Java](https://img.shields.io/badge/Java-8%2B-orange)
